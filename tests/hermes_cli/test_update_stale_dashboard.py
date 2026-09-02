@@ -281,6 +281,16 @@ class TestKillStaleDashboardWindows:
 
 
 
+class TestRestartManagedDashboardSystemctl:
+    """Managed restart is systemd-only; missing systemctl must not be probed."""
+
+    def test_missing_systemctl_skips_probe(self, monkeypatch):
+        monkeypatch.setattr(main_dashboard.shutil, "which", lambda _name: None)
+        with patch("subprocess.run") as mock_run:
+            assert main_dashboard._restart_managed_dashboard_service("test") is False
+            mock_run.assert_not_called()
+
+
 
 class TestDashboardUpdateCleanup:
     """The git and Windows ZIP update paths share this final cleanup."""
