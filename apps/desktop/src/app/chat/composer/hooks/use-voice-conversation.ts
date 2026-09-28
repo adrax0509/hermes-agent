@@ -43,6 +43,11 @@ interface VoiceConversationOptions {
   onTranscribeAudio?: (audio: Blob) => Promise<string>
   pendingResponse: () => PendingVoiceResponse | null
   consumePendingResponse: () => void
+  /** Surface a transcript that cannot be delivered as a turn (live busy never
+   *  settled): park it in the composer input and focus it, so a spoken
+   *  interruption is never silently dropped (#123357). */
+  parkText?: (text: string) => void
+  focusInput?: () => void
   /** Awaited right before the mic is opened. Used to let the wake-word listener
    *  fully release the capture device first, so the two never contend. */
   beforeMicOpen?: () => Promise<void> | void
@@ -70,6 +75,8 @@ export function useVoiceConversation({
   onTranscribeAudio,
   pendingResponse,
   consumePendingResponse,
+  parkText,
+  focusInput,
   beforeMicOpen
 }: VoiceConversationOptions) {
   const { t } = useI18n()
@@ -105,11 +112,22 @@ export function useVoiceConversation({
   const wasEnabledRef = useRef(enabled)
   const onStopWordRef = useRef(onStopWord)
   const onInterruptRef = useRef(onInterrupt)
+  // `submitVoiceTurn` (the composer's real `onSubmit`) re-creates per render
+  // and its busy guard captures THAT render's state; the barge monitor arms
+  // once per turn, so `submitCapturedUtterance` can outlive the render that
+  // created it and would otherwise hold that stale submit forever. Read the
+  // latest callback at call time, mirroring `onInterruptRef` (#123357).
+  const onSubmitRef = useRef(onSubmit)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     onInterruptRef.current = onInterrupt
   }, [onInterrupt])
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    onSubmitRef.current = onSubmit
+  }, [onSubmit])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -446,17 +464,30 @@ export function useVoiceConversation({
           await new Promise(resolve => window.setTimeout(resolve, 100))
         }
 
+        // Live busy never settled: submitting would be refused by the
+        // composer's live-busy guard and the spoken interruption would be
+        // lost. Park the transcript in the composer input instead — visible,
+        // editable, one Enter away from sending — and resume listening.
+        // Never drop a transcribed turn without a trace (#123357).
+        if (busyRef.current) {
+          parkText?.(transcript)
+          focusInput?.()
+          resumeListening()
+
+          return
+        }
+
         awaitingSpokenResponseRef.current = true
         dropSpeechSession()
         consumePendingResponse()
-        await onSubmit(transcript)
+        await onSubmitRef.current(transcript)
         setStatus('thinking')
       } catch (error) {
         notifyError(error, voiceCopy.transcriptionFailed)
         resumeListening()
       }
     },
-    [consumePendingResponse, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
+    [consumePendingResponse, onTranscribeAudio, voiceCopy.transcriptionFailed]
   )
 
   /**
