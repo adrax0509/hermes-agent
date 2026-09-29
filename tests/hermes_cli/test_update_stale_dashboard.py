@@ -213,7 +213,8 @@ class TestKillStaleDashboardPosix:
 
 
 
-    def test_user_scope_restart_never_falls_back_to_system_or_sudo(self, capsys):
+    @pytest.mark.platforms("linux")
+    def test_user_scope_restart_never_falls_back_to_system_or_sudo(self, capsys, monkeypatch):
         """A user unit is discovered and restarted through ``systemctl --user``.
 
         Since #92145 the managed restart no longer ends the pass — the scan
@@ -222,6 +223,9 @@ class TestKillStaleDashboardPosix:
         reached is now part of the contract rather than a violation of it.
         The invariant this test pins is unchanged: nothing here may touch the
         system scope or sudo.
+
+        ``platforms("linux")``: the managed restart is systemd-only (#101561)
+        — on any other OS the probe is skipped before any systemctl call.
         """
         calls: list[list[str]] = []
 
