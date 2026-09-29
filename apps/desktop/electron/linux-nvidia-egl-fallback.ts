@@ -38,6 +38,17 @@ const OVERRIDE_OFF = new Set(['0', 'false', 'no', 'off'])
  */
 export const NVIDIA_BROKEN_EGL_MAJORS: ReadonlySet<number> = new Set([580])
 
+/**
+ * First Electron major whose bundled ANGLE/Chromium fixed the NVIDIA 580 EGL
+ * probe (#124032: 42.11.8 renders 580.178.04 hardware-accelerated via ANGLE
+ * OpenGL at ~10% GPU-process CPU, where the Electron 40 runtime needs the
+ * SwiftShader fallback at ~539%). Older or unknown runtimes keep the safe
+ * legacy fallback; only a positively-identified fixed runtime skips it.
+ * This is a fixed-major threshold, not a probe: lower it only with a new
+ * verified-broken runtime report, raise/extend it when newer majors regress.
+ */
+export const ELECTRON_FIXED_EGL_MAJOR = 42
+
 export interface NvidiaEglFallbackDecision {
   enable: boolean
   reason: string | null
@@ -59,18 +70,37 @@ export function parseNvidiaDriverMajor(procVersion: string): number | null {
   return Number.isFinite(major) ? major : null
 }
 
+/**
+ * Extract the Electron major from a `process.versions.electron` value
+ * (format: "42.11.8"). Returns null when absent or unparsable so callers fall
+ * back to the safe legacy default.
+ */
+export function parseElectronMajor(electronVersion: string): number | null {
+  const match = /^(\d+)\./.exec(String(electronVersion || '').trim())
+
+  if (!match) {
+    return null
+  }
+
+  const major = Number.parseInt(match[1], 10)
+
+  return Number.isFinite(major) ? major : null
+}
+
 export function decideNvidiaEglFallback(options: {
   driverMajor: number | null
   env?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
   isWsl?: boolean
   remoteDisplayReason?: string | null
+  electronMajor?: number | null
 }): NvidiaEglFallbackDecision {
   const env = options.env ?? process.env
   const platform = options.platform ?? process.platform
   const isWsl = options.isWsl ?? false
   const remoteDisplayReason = options.remoteDisplayReason ?? null
   const driverMajor = options.driverMajor
+  const electronMajor = options.electronMajor ?? null
 
   const nvidiaOverride = String(env.HERMES_DESKTOP_NVIDIA_SWIFTSHADER || '')
     .trim()
@@ -105,7 +135,11 @@ export function decideNvidiaEglFallback(options: {
     return { enable: false, reason: null }
   }
 
-  const detected = driverMajor !== null && NVIDIA_BROKEN_EGL_MAJORS.has(driverMajor)
+  // #124032: from Electron 42 on, the bundled ANGLE handles the NVIDIA 580 EGL
+  // path in hardware, so the SwiftShader fallback is pure CPU cost there.
+  // Unknown or older runtimes keep the safe legacy default.
+  const runtimeFixed = electronMajor !== null && electronMajor >= ELECTRON_FIXED_EGL_MAJOR
+  const detected = driverMajor !== null && NVIDIA_BROKEN_EGL_MAJORS.has(driverMajor) && !runtimeFixed
 
   if (!detected && !OVERRIDE_ON.has(nvidiaOverride)) {
     return { enable: false, reason: null }
