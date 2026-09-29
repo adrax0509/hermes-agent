@@ -431,6 +431,35 @@ describe('createBundleSkewProbe', () => {
     expect(signal?.aborted).toBe(true)
   })
 
+  // The passive version check must never lazy-fetch: on a tree:0 partial
+  // clone the missing-tree promisor fetch is exactly the minutes-long,
+  // descendant-spawning git storm this probe is bounded against. Every git
+  // call the probe makes carries GIT_NO_LAZY_FETCH=1 so git fails fast on
+  // the missing object instead (older git ignores the variable, which is
+  // why the timeout abort stays).
+  it('sets GIT_NO_LAZY_FETCH on every git call', async () => {
+    const seen: Array<NodeJS.ProcessEnv | undefined> = []
+    const git: RunGit = async (_args, options) => {
+      seen.push(options.env)
+
+      return { code: 1, stderr: 'fatal: could not read', stdout: '' }
+    }
+
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO })
+
+    expect(await probe()).toEqual(NOT_STALE)
+
+    // rev-parse AND merge-base both carry the env; a cache hit spawns only
+    // rev-parse, and the first run here always answers not-stale (exit 1 is
+    // not cached), so the second call re-reads HEAD — every call carries it.
+    expect(await probe()).toEqual(NOT_STALE)
+    expect(seen.length).toBeGreaterThanOrEqual(2)
+
+    for (const env of seen) {
+      expect(env?.GIT_NO_LAZY_FETCH).toBe('1')
+    }
+  })
+
   it('reruns the full probe when an aborted git exits non-zero after the timeout', async () => {
     const pending: { resolve?: (value: { code: number; stderr: string; stdout: string }) => void } = {}
     const calls: string[][] = []
@@ -1170,7 +1199,7 @@ describe('detectBundleSkew against a real git repo', () => {
 
     const result = await detectBundleSkew({ commit: base, source: 'local' }, realGitRun(repoRoot), repoRoot)
 
-    expect(result).toEqual({ desktopCommitsBehind: 0, outOfSync: false })
+    expect(result).toEqual({ desktopCommitsBehind: 0, outOfSync: false }), 60_000
   })
 
   it('warns when a renderer file changed under apps/desktop', async () => {
@@ -1183,7 +1212,7 @@ describe('detectBundleSkew against a real git repo', () => {
 
     const result = await detectBundleSkew({ commit: base, source: 'local' }, realGitRun(repoRoot), repoRoot)
 
-    expect(result).toEqual({ desktopCommitsBehind: 1, outOfSync: true })
+    expect(result).toEqual({ desktopCommitsBehind: 1, outOfSync: true }), 60_000
   })
 
   // apps/shared/src is compiled into both bundles, so a fix confined to it (a shared gateway client, the
@@ -1226,7 +1255,7 @@ describe('detectBundleSkew against a real git repo', () => {
 
     const result = await detectBundleSkew({ commit: base, source: 'local' }, runGit, repoRoot)
 
-    expect(result).toEqual({ desktopCommitsBehind: null, outOfSync: false })
+    expect(result).toEqual({ desktopCommitsBehind: null, outOfSync: false }), 60_000
   })
 
   // Finding: in a SHALLOW clone, exit 1 can mean the history that would prove
@@ -1275,5 +1304,5 @@ describe('detectBundleSkew against a real git repo', () => {
       ['merge-base', '--is-ancestor', base, headSha],
       ['merge-base', '--is-ancestor', base, headSha]
     ])
-  })
+  }, 60_000)
 })

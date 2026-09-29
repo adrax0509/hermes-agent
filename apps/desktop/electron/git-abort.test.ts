@@ -437,4 +437,126 @@ describe('killChildOnAbort', () => {
       vi.useRealTimers()
     }
   })
+
+  // #125243: a lazy-fetching git spawns fetch/index-pack/pack-objects as its
+  // OWN children; killing only the top pid strands them reparented to PID 1.
+  // On POSIX the probe spawns git detached (own process group), so the abort
+  // signals the whole group by negative pgid alongside the SIGTERM.
+  it('signals the process group on abort so git descendants die too (POSIX)', () => {
+    vi.useFakeTimers()
+
+    try {
+      const { child } = fakeChild()
+      const groupKills: Array<[number, string]> = []
+      const treeKills: number[] = []
+
+      child.pid = 4242
+
+      killChildOnAbort(child, AbortSignal.abort(), 20, {
+        isWindows: false,
+        killGroup: (pgid, signal) => groupKills.push([pgid, signal]),
+        forceKillProcessTree: pid => treeKills.push(pid)
+      })
+
+      expect(groupKills).toEqual([[-4242, 'SIGKILL']])
+      // POSIX uses the group signal; the ancestry walk is Windows-only.
+      expect(treeKills).toEqual([])
+
+      vi.advanceTimersByTime(20)
+
+      // The SIGKILL escalation re-signals the group, not just the top pid.
+      expect(groupKills).toEqual([
+        [-4242, 'SIGKILL'],
+        [-4242, 'SIGKILL']
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // Windows has no process groups; the abort tree-kills by pid ancestry
+  // (taskkill /T /F) so the managed git host's descendants cannot survive.
+  it('tree-kills by pid ancestry on abort (Windows)', () => {
+    vi.useFakeTimers()
+
+    try {
+      const { child } = fakeChild()
+      const treeKills: number[] = []
+
+      child.pid = 4242
+
+      killChildOnAbort(child, AbortSignal.abort(), 20, {
+        isWindows: true,
+        forceKillProcessTree: pid => treeKills.push(pid)
+      })
+
+      expect(treeKills).toEqual([4242])
+
+      vi.advanceTimersByTime(20)
+
+      // The SIGKILL escalation re-walks the tree.
+      expect(treeKills).toEqual([4242, 4242])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // A child without a pid never spawned: no group or tree signal may go out
+  // (a negative-pgid send with an undefined pid would signal an unrelated group).
+  it('sends no group or tree signal for a child that never spawned (no pid)', () => {
+    vi.useFakeTimers()
+
+    try {
+      const { child } = fakeChild()
+      const groupKills: Array<[number, string]> = []
+      const treeKills: number[] = []
+
+      killChildOnAbort(child, AbortSignal.abort(), 20, {
+        isWindows: false,
+        killGroup: (pgid, signal) => groupKills.push([pgid, signal]),
+        forceKillProcessTree: pid => treeKills.push(pid)
+      })
+
+      expect(groupKills).toEqual([])
+      expect(treeKills).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // The group send is best-effort at the SIGTERM rung: a group that is
+  // already gone (ESRCH) must not stop the SIGKILL escalation from firing.
+  it('keeps the SIGKILL escalation when the group signal throws', () => {
+    vi.useFakeTimers()
+
+    try {
+      const { child, kills } = fakeChild()
+      let groupSends = 0
+
+      child.pid = 4242
+
+      killChildOnAbort(
+        child,
+        AbortSignal.abort(),
+        20,
+        {
+          isWindows: false,
+          killGroup: () => {
+            groupSends += 1
+            throw new Error('ESRCH')
+          }
+        }
+      )
+
+      expect(groupSends).toBe(1)
+
+      vi.advanceTimersByTime(20)
+
+      // The top-pid escalation still fires when the group send throws.
+      expect(kills).toEqual(['SIGTERM', 'SIGKILL'])
+      expect(groupSends).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

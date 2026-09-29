@@ -268,7 +268,7 @@ import { downloadViaOauthSessionToFile, downloadViaTokenToFile } from './gateway
 import { stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { resolveGatewayVersion } from './gateway-version'
 import { probeGatewayWebSocket, spawnedBackendProbeOptions } from './gateway-ws-probe'
-import { killChildOnAbort } from './git-abort'
+import { GIT_KILL_GRACE_MS, killChildOnAbort } from './git-abort'
 import { windowsGitCandidates } from './git-binary-candidates'
 import { registerGitIpc } from './git-ipc'
 import { createGitProbeTracker } from './git-probe-tracker'
@@ -3351,10 +3351,14 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
     // lazy-fetch trees for minutes), so a caller-supplied signal kills the
     // child: SIGTERM, escalating to SIGKILL if it has not closed shortly
     // after. Without it the spawn outlives the promise that stopped waiting.
+    // The kill is group/tree-wide so git's fetch/index-pack descendants die
+    // with it instead of surviving reparented to PID 1 (#125243).
     const signal: AbortSignal | undefined = options.signal
 
     if (signal) {
-      killChildOnAbort(child, signal)
+      killChildOnAbort(child, signal, GIT_KILL_GRACE_MS, {
+        forceKillProcessTree
+      })
     }
 
     child.stdout.on('data', chunk => {

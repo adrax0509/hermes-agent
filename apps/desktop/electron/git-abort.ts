@@ -7,6 +7,15 @@
  * the abort sends SIGTERM, and a short grace period later SIGKILL, which the
  * kernel cannot defer.
  *
+ * The signal must reach the whole PROCESS TREE, not the top pid: a git that
+ * lazy-fetches spawns `fetch -> index-pack -> pack-objects` as its own
+ * children, and those survive a plain child.kill(), reparented to PID 1
+ * (#125243). runGit spawns the probe's git detached on POSIX, so the child
+ * leads its own process group and a negative-pgid signal reaches the
+ * descendants; on Windows forceKillProcessTree (taskkill /T /F) follows the
+ * ancestry instead. Both are injectable, mirroring stopBackendChild in
+ * backend-child.ts, so the group/tree semantics stay provable in tests.
+ *
  * Split out of main.ts as a small pure function of a child-like object, so the
  * escalation is provable without spawning a process or booting Electron.
  */
@@ -50,8 +59,41 @@ export interface AbortKillableChild {
 export function killChildOnAbort(
   child: AbortKillableChild,
   signal: AbortSignal,
-  graceMs: number = GIT_KILL_GRACE_MS
+  graceMs: number = GIT_KILL_GRACE_MS,
+  deps: {
+    /** POSIX: signal the whole process group (negative pgid). Real: process.kill. */
+    killGroup?: (pgid: number, signal: NodeJS.Signals) => void
+    /** Windows: taskkill /T /F by pid ancestry. Real: forceKillProcessTree in main.ts. */
+    forceKillProcessTree?: (pid: number) => void
+    /** Defaults to the real platform check; injectable for tests. */
+    isWindows?: boolean
+  } = {}
 ): void {
+  const isWindows = deps.isWindows ?? process.platform === 'win32'
+  const killGroup = deps.killGroup ?? ((pgid: number, sig: NodeJS.Signals): boolean => process.kill(pgid, sig))
+  // On Windows the tree-kill helper is required (no process groups); on POSIX
+  // the group signal subsumes it and the fallback stays child.kill().
+  const killTree = deps.forceKillProcessTree ?? (isWindows ? () => {} : undefined)
+
+  /**
+   * Signal the child AND its descendants. The top pid first (a group signal
+   * needs the group alive to mean anything), then the group on POSIX or the
+   * ancestry tree on Windows. Best-effort at every rung: a thrown kill must
+   * not stop the escalation below from firing.
+   */
+  const killTreeNow = (): void => {
+    if (child.pid !== undefined) {
+      if (isWindows) {
+        killTree?.(child.pid)
+      } else {
+        try {
+          killGroup(-child.pid, 'SIGKILL')
+        } catch {
+          /* the group may already be gone; the top pid's own kill follows */
+        }
+      }
+    }
+  }
   let escalation: ReturnType<typeof setTimeout> | null = null
   // Set by teardown. Checked before every kill and inside the timer, so a child
   // that is already gone is never signalled again (its pid may even be reused).
@@ -122,6 +164,10 @@ export function killChildOnAbort(
 
     try {
       child.kill('SIGTERM')
+      // SIGTERM reaches only the top pid; git's fetch/index-pack descendants
+      // keep running under it. The tree kill is best-effort here and hardens
+      // into SIGKILL below if the child has not closed by the grace period.
+      killTreeNow()
     } catch {
       // Deliberately swallowed; the escalation below still gets its chance.
     }
@@ -142,6 +188,8 @@ export function killChildOnAbort(
 
         return
       }
+
+      killTreeNow()
 
       try {
         child.kill('SIGKILL')

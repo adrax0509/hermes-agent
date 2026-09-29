@@ -90,6 +90,14 @@ export interface RunGitOptions {
    * lazy-fetch trees for minutes).
    */
   signal?: AbortSignal
+  /**
+   * Extra env for this call. The probe sets GIT_NO_LAZY_FETCH here: a passive
+   * version check must never fetch missing objects (a tree:0 clone's promisor
+   * fetch is the minutes-long lazy fetch this probe is bounded against) — it
+   * must fail fast and report "unknown" instead. Parity with
+   * hermes_cli/_subprocess_compat.py's NO_LAZY_FETCH_ENV.
+   */
+  env?: NodeJS.ProcessEnv
 }
 
 export type RunGit = (
@@ -347,7 +355,20 @@ export function createBundleSkewProbe({
       return NOT_STALE
     }
 
-    const signaled: RunGit = (args, options) => runGit(args, { ...options, signal: controller.signal })
+    // Read-only probes must never lazy-fetch (parity with the Python side's
+    // NO_LAZY_FETCH_ENV): on a tree:0 partial clone a missing tree makes git
+    // spawn a promisor fetch that runs for minutes and piles up orphaned
+    // packs. With this set the probe fails fast on the missing object
+    // instead (git >= 2.44; older git ignores the variable, which is why the
+    // timeout + tree-kill bounds below still matter).
+    const probeEnv = { GIT_NO_LAZY_FETCH: '1' }
+
+    const signaled: RunGit = (args, options) =>
+      runGit(args, {
+        ...options,
+        env: { ...options.env, ...probeEnv },
+        signal: controller.signal
+      })
     const myGeneration = ++generation
 
     let timer: ReturnType<typeof setTimeout> | null = null
