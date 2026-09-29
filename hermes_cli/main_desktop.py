@@ -150,7 +150,7 @@ def _installed_desktop_commit(desktop_dir: Path) -> Optional[str]:
         return None
     resources = exe.parent.parent / "Resources" if sys.platform == "darwin" else exe.parent / "resources"
     try:
-        data = json.loads((resources / "install-stamp.json").read_text(encoding="utf-8"))
+        data = json.loads((resources / "install-stamp.json").read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     commit = data.get("commit") if isinstance(data, dict) else None

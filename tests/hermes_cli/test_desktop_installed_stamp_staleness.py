@@ -64,6 +64,15 @@ class TestInstalledDesktopCommit:
         monkeypatch.setattr(md, "_desktop_packaged_executable", lambda _d: exe)
         assert md._installed_desktop_commit(tmp_path) is None
 
+    def test_bom_prefixed_stamp_still_parses(self, tmp_path, monkeypatch):
+        # Windows tooling (PowerShell Set-Content/Out-File) BOMs files it touches;
+        # the read must tolerate that (reads utf-8-sig, per repo policy).
+        exe, resources = _install_app(tmp_path, "linux", stamp=None)
+        (resources / "install-stamp.json").write_bytes(json.dumps({"commit": SHA_A}).encode("utf-8-sig"))
+        monkeypatch.setattr(md.sys, "platform", "linux")
+        monkeypatch.setattr(md, "_desktop_packaged_executable", lambda _d: exe)
+        assert md._installed_desktop_commit(tmp_path) == SHA_A
+
     def test_no_packaged_exe_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.setattr(md, "_desktop_packaged_executable", lambda _d: None)
         assert md._installed_desktop_commit(tmp_path) is None
