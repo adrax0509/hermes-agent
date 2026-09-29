@@ -1713,6 +1713,12 @@ def cmd_gui(args: argparse.Namespace):
         launch_command.extend(config_electron_flags)
     if getattr(args, "local", False):
         launch_command.append("--local")
+    # #82654: wlroots/Wayland compositors summon the floating composer via a
+    # compositor keybind that execs `hermes desktop --quick-entry`; the flag
+    # must reach the Electron binary's argv so the single-instance handler in
+    # the main process can forward it to the running instance.
+    if getattr(args, "quick_entry", False):
+        launch_command.append("--quick-entry")
     launch_command.extend(_explicit_profile_args())
     if not source_mode:
         desktop_launch_notice(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
