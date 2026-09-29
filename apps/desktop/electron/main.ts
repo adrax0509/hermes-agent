@@ -4936,7 +4936,8 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
       root: payload.repoDir,
       bootstrap: false,
       shell: false,
-      local: 'bundled'
+      local: 'bundled',
+      readyFile: true
     }
   }
 
@@ -5017,7 +5018,8 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
             env: {},
             kind: 'command',
             shell: shellForProbe,
-            local: 'installed'
+            local: 'installed',
+            readyFile: true
           }
         }
 
